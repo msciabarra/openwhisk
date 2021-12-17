@@ -70,7 +70,7 @@ case class ServiceContainer(port: Int, description: String, name: String)
 
 object StandaloneDockerSupport {
   val prefix = "whisk-"
-  val network = "bridge"
+  val network = sys.props.get("whisk.standalone.docker.network").getOrElse("bridge")
 
   def checkOrAllocatePort(preferredPort: Int): Int = {
     if (isPortFree(preferredPort)) preferredPort else freePort()
@@ -106,12 +106,21 @@ object StandaloneDockerSupport {
   }
 
   /**
-   * Returns the hostname to access the playground.
-   * It defaults to localhost but it can be overridden
-   * and it is useful when the standalone is run in a container.
+   * Returns the url to access the playground.
+   * It defaults to http://localhost:3232 but it can be overriden,
+   * it is useful when the standalone is run in a container.
    */
-  def getExternalHostName(): String = {
-    sys.props.get("whisk.standalone.host.external").getOrElse(getLocalHostName())
+  def getPlaygroundURL(): String = {
+    sys.props.get("whisk.standalone.proxy.url").getOrElse(s"http://${getLocalHostName()}:3232")
+  }
+
+  /**
+    * Returns the url to access the apihost.
+    * It defaults to http://localhost:3233 but it can be overriden,
+    * it is useful when the standalone is run in a container.
+    */
+  def getApiHostURL(): String = {
+    sys.props.get("whisk.standalone.proxy.url").getOrElse(s"http://${getLocalHostName()}:3233")
   }
 
   /**
@@ -126,6 +135,10 @@ object StandaloneDockerSupport {
       else "localhost")
   }
 
+
+  /**
+    * Returns the ip of the servers, it can be overriden by whisk.standalone.host.ip
+    */
   def getLocalHostIp(): String = {
     sys.props
       .get("whisk.standalone.host.ip")
@@ -136,11 +149,23 @@ object StandaloneDockerSupport {
   }
 
   /**
+    * Return the proxyed port to access to the service if there is a proxy
+    * It can be configured by whisk.standalone.proxy.port
+    * Otherwise it returns the default port (provided)
+    * @param port
+    */
+  def getProxyPort(defaultPort: Int): Int = {
+    sys.props
+      .get("whisk.standalone.proxy.port")
+      .getOrElse(defaultPort.toString()).toInt
+  }
+
+  /**
    * Determines the name/ip which code running within container can use to connect back to Controller
    */
   def getLocalHostInternalName(): String = {
     sys.props
-      .get("whisk.standalone.host.internal")
+      .get("whisk.standalone.host.ip")
       .getOrElse(
         if (SystemUtils.IS_OS_MAC || SystemUtils.IS_OS_WINDOWS)
           "host.docker.internal"
@@ -148,9 +173,9 @@ object StandaloneDockerSupport {
   }
 
   def prePullImage(imageName: String)(implicit logging: Logging): Unit = {
-    //docker images openwhisk/action-nodejs-v14:nightly
+    //docker images openwhisk/action-nodejs-v10:nightly
     //REPOSITORY                    TAG                 IMAGE ID            CREATED             SIZE
-    //openwhisk/action-nodejs-v14   nightly             dbb0f8e1a050        5 days ago          967MB
+    //openwhisk/action-nodejs-v10   nightly             dbb0f8e1a050        5 days ago          967MB
     val imageResult = s"$dockerCmd images $imageName".!!
     val imageExist = imageResult.linesIterator.toList.size > 1
     if (!imageExist || imageName.contains(":nightly")) {
@@ -190,11 +215,7 @@ object StandaloneDockerSupport {
     //TODO Logic duplicated from DockerClient and WindowsDockerClient for now
     val executable = loadConfig[String]("whisk.docker.executable").toOption
     val alternatives =
-      List(
-        "/usr/bin/docker",
-        "/usr/local/bin/docker",
-        """C:\Program Files\Docker\Docker\resources\bin\docker.exe""",
-        """C:\Program Files\Docker\Docker\resources\docker.exe""") ++ executable
+      List("/usr/bin/docker", "/usr/local/bin/docker", """C:\Program Files\Docker\Docker\resources\bin\docker.exe""") ++ executable
     Try {
       alternatives.find(a => Files.isExecutable(Paths.get(a))).get
     } getOrElse {

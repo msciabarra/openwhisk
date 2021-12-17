@@ -23,6 +23,7 @@ import akka.actor.ActorSystem
 import akka.http.scaladsl.model._
 import akka.http.scaladsl.server.Route
 import akka.http.scaladsl.server.directives.FileAndResourceDirectives.ResourceFile
+import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 import ch.megard.akka.http.cors.scaladsl.CorsDirectives._
 import org.apache.commons.io.IOUtils
@@ -37,14 +38,17 @@ import scala.concurrent.{Await, ExecutionContext}
 import scala.sys.process._
 import scala.util.{Failure, Success, Try}
 
-class PlaygroundLauncher(
-  host: String,
-  extHost: String,
-  controllerPort: Int,
-  pgPort: Int,
-  authKey: String,
-  devMode: Boolean,
-  noBrowser: Boolean)(implicit logging: Logging, ec: ExecutionContext, actorSystem: ActorSystem, tid: TransactionId) {
+class PlaygroundLauncher(host: String,
+                         extURL: String,
+                         controllerPort: Int,
+                         pgPort: Int,
+                         authKey: String,
+                         devMode: Boolean,
+                         noBrowser: Boolean)(implicit logging: Logging,
+                                             ec: ExecutionContext,
+                                             actorSystem: ActorSystem,
+                                             materializer: ActorMaterializer,
+                                             tid: TransactionId) {
   private val interface = loadConfigOrThrow[String]("whisk.controller.interface")
   private val jsFileName = "playgroundFunctions.js"
   private val jsContentType = ContentType(MediaTypes.`application/javascript`, HttpCharsets.`UTF-8`)
@@ -61,17 +65,19 @@ class PlaygroundLauncher(
   private val jsFileContent = {
     val js = resourceToString(jsFileName, "ui")
     val content =
-      js.replace("window.APIHOST='http://localhost:3233'", s"window.APIHOST='http://$extHost:$controllerPort'")
+      js.replace("window.APIHOST='http://localhost:3233'", s"window.APIHOST='$extURL'")
     content.getBytes(UTF_8)
   }
 
   private val pg = "playground"
-  private val pgUrl = s"http://${StandaloneDockerSupport.getLocalHostName()}:$pgPort/$pg"
+  private val pgUrl = s"$extURL/$pg"
+  private val app = "app"
+  private val appDir = "/app/public"
 
   private val wsk = new Wsk(host, controllerPort, authKey)
 
   def run(): ServiceContainer = {
-    BasicHttpService.startHttpService(PlaygroundService.route, pgPort, None, interface)(actorSystem)
+    BasicHttpService.startHttpService(PlaygroundService.route, pgPort, None, interface)(actorSystem, materializer)
     ServiceContainer(pgPort, pgUrl, "Playground")
   }
 
@@ -117,6 +123,7 @@ class PlaygroundLauncher(
   object PlaygroundService extends BasicHttpService {
     override def routes(implicit transid: TransactionId): Route =
       path(PathEnd | Slash | pg) { redirect(s"/$pg/ui/index.html", StatusCodes.Found) } ~
+      path(PathEnd | Slash | app) { redirect(s"/$app/index.html", StatusCodes.Found) } ~
         cors() {
           pathPrefix(pg / "ui" / Segment) { fileName =>
             get {
@@ -126,6 +133,8 @@ class PlaygroundLauncher(
                 getFromResource(s"$uiPath/$fileName")
               }
             }
+          } ~ pathPrefix(app) {
+            getFromDirectory(appDir)
           }
         }
   }
